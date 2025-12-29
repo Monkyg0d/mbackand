@@ -190,9 +190,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],  # Явно разрешаем POST и OPTIONS
     allow_headers=["*"],
 )
+
+# Добавьте этот эндпоинт для теста в браузере
+@app.get("/")
+async def health_check():
+    return {"status": "ok", "message": "Backend is running"}
 
 # --- WEBHOOK ENDPOINT ---
 @app.post(WEBHOOK_PATH)
