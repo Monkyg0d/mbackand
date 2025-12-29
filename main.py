@@ -23,7 +23,7 @@ load_dotenv()  # Загружает переменные из .env
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1234")
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 5432))  # <-- Важно: конвертация в int
+DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "amigo")
 
 DB_DSN = os.getenv("DATABASE_URL")
@@ -34,6 +34,10 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+# --- WEBHOOK SETTINGS ---
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
 
 class UserProfile(BaseModel):
     telegram_id: int
@@ -74,7 +78,7 @@ db = DBContainer()
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❤️ Найти пару", web_app=WebAppInfo(url=WEBHOOK_URL))]
+        [InlineKeyboardButton(text="❤️ Найти пару", web_app=WebAppInfo(url=os.getenv("WEBAPP_URL")))]
     ])
     await message.answer(
         "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже, чтобы начать знакомства!", 
@@ -159,14 +163,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ DB Connection Error: {e}")
 
-    # --- Set Webhook if provided, else start polling ---
-    if WEBHOOK_URL:
-        await bot.set_webhook(WEBHOOK_URL)
-        print(f"🌐 Webhook set to {WEBHOOK_URL}")
-    else:
-        asyncio.create_task(dp.start_polling(bot))
-        print("🤖 Bot Polling Started")
-
     yield
 
     if hasattr(app.state, 'pool'):
@@ -183,8 +179,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Endpoints ---
+# --- WEBHOOK ENDPOINT ---
+@app.on_event("startup")
+async def on_startup():
+    await bot.delete_webhook()
+    await bot.set_webhook(WEBHOOK_URL_FULL)
+    print(f"🌐 Webhook set to {WEBHOOK_URL_FULL}")
 
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(update: dict):
+    update_obj = types.Update(**update)
+    await dp.process_update(update_obj)
+    return {"ok": True}
+
+# --- Остальные Endpoints оставляем без изменений ---
 @app.post("/register")
 async def register(user: UserProfile):
     query = """
@@ -207,29 +215,18 @@ async def get_me(telegram_id: int):
             raise HTTPException(status_code=404, detail="User not found")
         return dict(row)
 
-# --- NEW: Create Invoice Endpoint ---
 @app.post("/create_invoice")
 async def create_invoice(req: CreateInvoiceRequest):
     try:
-        # Generate the Invoice Link
-        # Price is in smallest units (cents for USD/EUR, tyiyn for KZT? Telegram uses minimal units)
-        # For KZT, standard amount usually integers, but Telegram api expects integer amount.
-        # Let's use XTR (Telegram Stars) for digital goods if no payment token is provided, 
-        # OR standard currency if PAYMENT_TOKEN is set.
-        
-        # Example for KZT (Test Provider): 590 KZT -> 59000 (if KZT has cents? Actually KZT usually passed as is * 100 for standard stripe rules)
-        # Let's assume standard payment provider behavior: amount * 100.
-        
         prices = [LabeledPrice(label="Premium Подписка", amount=590 * 100)] 
-        
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
             description="Доступ к фильтрам и VIP функциям",
-            payload="premium_upgrade", # Internal ID for us to track
+            payload="premium_upgrade",
             provider_token=PAYMENT_TOKEN,
-            currency="KZT", # Or "XTR" for Stars
+            currency="KZT",
             prices=prices,
-            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png", # Example Gold Star
+            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
             photo_width=512,
             photo_height=512
         )
