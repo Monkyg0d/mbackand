@@ -186,13 +186,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- WEBHOOK ENDPOINT ---
-@app.on_event("startup")
-async def on_startup():
-    await bot.delete_webhook()
-    await bot.set_webhook(WEBHOOK_URL_FULL)
-    print(f"🌐 Webhook set to {WEBHOOK_URL_FULL}")
+# --- LIFESPAN (DB + WEBHOOK) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. DB Connection
+    try:
+        app.state.pool = await asyncpg.create_pool(DATABASE_URL)
+        print("✅ DB Connected")
+        
+        async with app.state.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    telegram_id BIGINT PRIMARY KEY,
+                    username TEXT, first_name TEXT, name TEXT, age INT,
+                    gender TEXT, orientation TEXT, country TEXT, city TEXT,
+                    goal TEXT, photo TEXT, bio TEXT, is_premium BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS likes (
+                    from_user BIGINT, to_user BIGINT, created_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (from_user, to_user)
+                );
+                CREATE TABLE IF NOT EXISTS matches (
+                    user_1 BIGINT, user_2 BIGINT, created_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (user_1, user_2)
+                );
+                CREATE TABLE IF NOT EXISTS admins (
+                    id SERIAL PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT
+                );
+            """)
+            # Create default admin
+            hashed = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode()
+            await conn.execute("INSERT INTO admins (email, password_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING", ADMIN_EMAIL, hashed)
+    except Exception as e:
+        print(f"❌ DB Error: {e}")
 
+    # 2. Webhook Setup
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(WEBHOOK_URL_FULL)
+        print(f"🌐 Webhook set to: {WEBHOOK_URL_FULL}")
+    except Exception as e:
+        print(f"❌ Webhook Error: {e}")
+
+    yield
+    
+    # 3. Shutdown
+    if hasattr(app.state, 'pool'):
+        await app.state.pool.close()
+    await bot.session.close()
+# Инициализация приложения
+app = FastAPI(lifespan=lifespan)
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):
     telegram_update = types.Update(**update)
