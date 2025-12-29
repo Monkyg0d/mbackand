@@ -195,10 +195,9 @@ async def on_startup():
 
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):
-    update_obj = types.Update(**update)
-    await dp.process_update(update_obj)
+    telegram_update = types.Update(**update)
+    await dp.feed_update(bot, telegram_update)
     return {"ok": True}
-
 # --- Остальные Endpoints оставляем без изменений ---
 @app.post("/register")
 async def register(user: UserProfile):
