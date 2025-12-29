@@ -75,13 +75,19 @@ class DBContainer:
 
 db = DBContainer()
 
-@dp.message(Command("start"))
+
+@router.message(Command("start"))
 async def cmd_start(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❤️ Найти пару", web_app=WebAppInfo(url=os.getenv("WEBAPP_URL")))]
-    ])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="❤️ Найти пару",
+                web_app=WebAppInfo(url=os.getenv("WEBAPP_URL"))
+            )]
+        ]
+    )
     await message.answer(
-        "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже, чтобы начать знакомства!", 
+        "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже 👇",
         reply_markup=kb
     )
 
