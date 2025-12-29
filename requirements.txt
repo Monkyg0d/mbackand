@@ -5,3 +5,4 @@ asyncpg
 python-multipart
 bcrypt
 aiogram
+python-dotenv
