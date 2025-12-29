@@ -64,6 +64,9 @@ class AdminLogin(BaseModel):
     email: str
     password: str
 
+class CreateInvoiceRequest(BaseModel):
+    telegram_id: int
+
 class UpdateProfileRequest(BaseModel):
     telegram_id: int
     name: Optional[str] = None
@@ -74,9 +77,6 @@ class UpdateProfileRequest(BaseModel):
     goal: Optional[str] = None
     photo: Optional[str] = None
     bio: Optional[str] = None
-
-class CreateInvoiceRequest(BaseModel):
-    telegram_id: int
 
 # --- Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
@@ -208,7 +208,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[WEBAPP_URL],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -404,7 +404,7 @@ async def get_all_users():
 
 # --- ADMIN DELETE USER ---
 @app.delete("/admin/users/{telegram_id}")
-async def delete_user(telegram_id: int, admin_password: str):
+async def delete_user(telegram_id: int, admin_password: str = Query(...)):
     async with app.state.pool.acquire() as conn:
         admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = 'admin@amigo.com'")
         if not admin or not bcrypt.checkpw(admin_password.encode('utf-8'), admin['password_hash'].encode('utf-8')):
