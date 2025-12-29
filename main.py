@@ -14,7 +14,6 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, PreCheckoutQuery
 
 # ================= CONFIGURATION =================
-# ================= CONFIGURATION =================
 from dotenv import load_dotenv
 import os
 
@@ -27,14 +26,14 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))  # <-- Важно: конвертация в int
 DB_NAME = os.getenv("DB_NAME", "amigo")
 
-DB_DSN = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_DSN = os.getenv("DATABASE_URL")
 
 # --- Telegram / Payment ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
-WEBAPP_URL = os.getenv("WEBAPP_URL")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 class UserProfile(BaseModel):
     telegram_id: int
@@ -67,7 +66,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # --- Shared DB Pool Container ---
-# We need to access the DB pool from within Aiogram handlers
 class DBContainer:
     pool = None
 
@@ -76,7 +74,7 @@ db = DBContainer()
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❤️ Найти пару", web_app=WebAppInfo(url=WEBAPP_URL))]
+        [InlineKeyboardButton(text="❤️ Найти пару", web_app=WebAppInfo(url=WEBHOOK_URL))]
     ])
     await message.answer(
         "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже, чтобы начать знакомства!", 
@@ -84,47 +82,34 @@ async def cmd_start(message: types.Message):
     )
 
 # --- PAYMENT HANDLERS (Aiogram) ---
-
-# 1. Pre-Checkout Query: Telegram спрашивает "Всё ок? Можно продавать?"
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
-    # Здесь можно проверить наличие товара, но у нас Premium безлимитный.
-    # Отвечаем True (ok)
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
-# 2. Successful Payment: Оплата прошла, деньги у Telegram/Провайдера. Выдаем товар.
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: types.Message):
     if not db.pool:
         return
-    
-    # Получаем ID пользователя и данные платежа
     user_id = message.from_user.id
-    total_amount = message.successful_payment.total_amount // 100 # amount is in cents
+    total_amount = message.successful_payment.total_amount // 100
     currency = message.successful_payment.currency
-    payload = message.successful_payment.invoice_payload # "premium_upgrade"
-
+    payload = message.successful_payment.invoice_payload
     if payload == "premium_upgrade":
         print(f"💰 Payment received from {user_id}: {total_amount} {currency}")
-        
-        # Обновляем БД
         async with db.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", user_id)
-        
         await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
 
 # --- FastAPI Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        # Create Pool
         pool = await asyncpg.create_pool(DB_DSN)
-        db.pool = pool # Share with Aiogram
+        db.pool = pool
         app.state.pool = pool
         print("✅ DB Connected")
-        
+
         async with app.state.pool.acquire() as conn:
-            # Create basic tables
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id BIGINT PRIMARY KEY,
@@ -159,32 +144,31 @@ async def lifespan(app: FastAPI):
                     password_hash TEXT
                 );
             """)
-
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE")
                 print("🔹 Migration: Added is_premium column")
             except asyncpg.exceptions.DuplicateColumnError:
-                pass 
-
-            # Default admin
-            default_hash = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode('utf-8')
+                pass
+            default_hash = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode('utf-8')
             await conn.execute("""
                 INSERT INTO admins (email, password_hash) 
-                VALUES ('admin@amigo.com', $1) 
+                VALUES ($1, $2) 
                 ON CONFLICT (email) DO NOTHING
-            """, default_hash)
+            """, ADMIN_EMAIL, default_hash)
 
     except Exception as e:
         print(f"❌ DB Connection Error: {e}")
 
-    # Start Bot Polling in Background
-    # NOTE: In production, better to use Webhooks instead of Polling inside FastAPI
-    if BOT_TOKEN != "YOUR_BOT_TOKEN_HERE":
+    # --- Set Webhook if provided, else start polling ---
+    if WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
+        print(f"🌐 Webhook set to {WEBHOOK_URL}")
+    else:
         asyncio.create_task(dp.start_polling(bot))
         print("🤖 Bot Polling Started")
 
     yield
-    
+
     if hasattr(app.state, 'pool'):
         await app.state.pool.close()
     await bot.session.close()
