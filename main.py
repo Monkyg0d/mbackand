@@ -75,6 +75,9 @@ class UpdateProfileRequest(BaseModel):
     photo: Optional[str] = None
     bio: Optional[str] = None
 
+class CreateInvoiceRequest(BaseModel):
+    telegram_id: int
+
 # --- Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
