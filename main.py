@@ -188,7 +188,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://7770233e.mynewapp-1ph.pages.dev"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],  # Явно разрешаем POST и OPTIONS
     allow_headers=["*"],
