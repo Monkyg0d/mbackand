@@ -112,40 +112,63 @@ async def process_successful_payment(message: types.Message):
         await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
 
 # --- FastAPI Lifespan ---
-# --- LIFESPAN (DB + WEBHOOK) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. DB Connection
     try:
-        app.state.pool = await asyncpg.create_pool(DATABASE_URL)
+        pool = await asyncpg.create_pool(DB_DSN)
+        db.pool = pool
+        app.state.pool = pool
         print("✅ DB Connected")
-        
+
         async with app.state.pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id BIGINT PRIMARY KEY,
-                    username TEXT, first_name TEXT, name TEXT, age INT,
-                    gender TEXT, orientation TEXT, country TEXT, city TEXT,
-                    goal TEXT, photo TEXT, bio TEXT, is_premium BOOLEAN DEFAULT FALSE,
+                    username TEXT,
+                    first_name TEXT,
+                    name TEXT,
+                    age INT,
+                    gender TEXT,
+                    orientation TEXT,
+                    country TEXT,
+                    city TEXT,
+                    goal TEXT,
+                    photo TEXT,
+                    bio TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE TABLE IF NOT EXISTS likes (
-                    from_user BIGINT, to_user BIGINT, created_at TIMESTAMP DEFAULT NOW(),
+                    from_user BIGINT,
+                    to_user BIGINT,
+                    created_at TIMESTAMP DEFAULT NOW(),
                     PRIMARY KEY (from_user, to_user)
                 );
                 CREATE TABLE IF NOT EXISTS matches (
-                    user_1 BIGINT, user_2 BIGINT, created_at TIMESTAMP DEFAULT NOW(),
+                    user_1 BIGINT,
+                    user_2 BIGINT,
+                    created_at TIMESTAMP DEFAULT NOW(),
                     PRIMARY KEY (user_1, user_2)
                 );
                 CREATE TABLE IF NOT EXISTS admins (
-                    id SERIAL PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE,
+                    password_hash TEXT
                 );
             """)
-            # Create default admin
-            hashed = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode()
-            await conn.execute("INSERT INTO admins (email, password_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING", ADMIN_EMAIL, hashed)
+            try:
+                await conn.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE")
+                print("🔹 Migration: Added is_premium column")
+            except asyncpg.exceptions.DuplicateColumnError:
+                pass
+            default_hash = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode('utf-8')
+            await conn.execute("""
+                INSERT INTO admins (email, password_hash) 
+                VALUES ($1, $2) 
+                ON CONFLICT (email) DO NOTHING
+            """, ADMIN_EMAIL, default_hash)
+
     except Exception as e:
-        print(f"❌ DB Error: {e}")
+        print(f"❌ DB Connection Error: {e}")
 
     # 2. Webhook Setup
     try:
@@ -171,7 +194,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# --- WEBHOOK ENDPOINT ---
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):
     telegram_update = types.Update(**update)
