@@ -8,6 +8,7 @@ import asyncpg
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
+
 # --- AIOGRAM (Telegram Bot) IMPORTS ---
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
@@ -17,7 +18,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+load_dotenv()  # Загружает переменные из .env
 
 # --- DB Settings ---
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -40,7 +41,6 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "https://10002b84.mynewapp-1ph.pages.dev")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
 
-# ================= MODELS =================
 class UserProfile(BaseModel):
     telegram_id: int
     username: Optional[str] = None
@@ -67,23 +67,13 @@ class AdminLogin(BaseModel):
 class CreateInvoiceRequest(BaseModel):
     telegram_id: int
 
-class UpdateProfileRequest(BaseModel):
-    telegram_id: int
-    name: Optional[str] = None
-    age: Optional[int] = None
-    gender: Optional[str] = None
-    orientation: Optional[str] = None
-    city: Optional[str] = None
-    goal: Optional[str] = None
-    photo: Optional[str] = None
-    bio: Optional[str] = None
-
-# ================= BOT SETUP =================
+# --- Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+# --- Shared DB Pool Container ---
 class DBContainer:
     pool = None
 
@@ -103,7 +93,7 @@ async def cmd_start(message: types.Message):
         "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже 👇",
         reply_markup=kb
     )
-
+# --- PAYMENT HANDLERS (Aiogram) ---
 @router.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
@@ -122,7 +112,7 @@ async def process_successful_payment(message: types.Message):
             await conn.execute("UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", user_id)
         await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
 
-# ================= FASTAPI LIFESPAN =================
+# --- FastAPI Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -171,13 +161,6 @@ async def lifespan(app: FastAPI):
                 print("🔹 Migration: Added is_premium column")
             except asyncpg.exceptions.DuplicateColumnError:
                 pass
-            
-            try:
-                await conn.execute("ALTER TABLE users ADD COLUMN updated_at TIMESTAMP DEFAULT NOW()")
-                print("🔹 Migration: Added updated_at column")
-            except asyncpg.exceptions.DuplicateColumnError:
-                pass
-            
             default_hash = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode('utf-8')
             await conn.execute("""
                 INSERT INTO admins (email, password_hash) 
@@ -188,6 +171,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ DB Connection Error: {e}")
 
+    # 2. Webhook Setup
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL_FULL)
@@ -197,31 +181,32 @@ async def lifespan(app: FastAPI):
 
     yield
     
+    # 3. Shutdown
     if hasattr(app.state, 'pool'):
         await app.state.pool.close()
     await bot.session.close()
 
-# ================= FASTAPI APP =================
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[WEBAPP_URL],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# Добавьте этот эндпоинт для теста в браузере
 @app.get("/")
 async def health_check():
     return {"status": "ok", "message": "Backend is running"}
 
+# --- WEBHOOK ENDPOINT ---
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):
     telegram_update = types.Update(**update)
     await dp.feed_update(bot, telegram_update)
     return {"ok": True}
-
-# ================= ENDPOINTS =================
+# --- Остальные Endpoints оставляем без изменений ---
 @app.post("/register")
 async def register(user: UserProfile):
     query = """
@@ -268,7 +253,6 @@ async def create_invoice(req: CreateInvoiceRequest):
 async def get_candidates(
     telegram_id: int, 
     city: Optional[str] = None, 
-    goal: Optional[str] = None,
     min_age: int = 18, 
     max_age: int = 99
 ):
@@ -288,10 +272,6 @@ async def get_candidates(
             if city and city != "all":
                 sql += f" AND city = ${param_idx}"
                 params.append(city)
-                param_idx += 1
-            if goal and goal != "all":
-                sql += f" AND goal = ${param_idx}"
-                params.append(goal)
                 param_idx += 1
             if min_age > 18:
                 sql += f" AND age >= ${param_idx}"
@@ -328,66 +308,12 @@ async def get_matches(telegram_id: int):
         rows = await conn.fetch(query, telegram_id)
         return [dict(row) for row in rows]
 
-@app.put("/profile/update")
-async def update_profile(profile: UpdateProfileRequest):
-    fields = []
-    values = []
-    idx = 1
-    
-    if profile.name is not None:
-        fields.append(f"name = ${idx}")
-        values.append(profile.name)
-        idx += 1
-    if profile.age is not None:
-        fields.append(f"age = ${idx}")
-        values.append(profile.age)
-        idx += 1
-    if profile.gender is not None:
-        fields.append(f"gender = ${idx}")
-        values.append(profile.gender)
-        idx += 1
-    if profile.orientation is not None:
-        fields.append(f"orientation = ${idx}")
-        values.append(profile.orientation)
-        idx += 1
-    if profile.city is not None:
-        fields.append(f"city = ${idx}")
-        values.append(profile.city)
-        idx += 1
-    if profile.goal is not None:
-        fields.append(f"goal = ${idx}")
-        values.append(profile.goal)
-        idx += 1
-    if profile.photo is not None:
-        fields.append(f"photo = ${idx}")
-        values.append(profile.photo)
-        idx += 1
-    if profile.bio is not None:
-        fields.append(f"bio = ${idx}")
-        values.append(profile.bio)
-        idx += 1
-    
-    fields.append("updated_at = NOW()")
-    
-    if len(fields) <= 1:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    
-    query = f"UPDATE users SET {', '.join(fields)} WHERE telegram_id = $1"
-    values.insert(0, profile.telegram_id)
-    
-    async with app.state.pool.acquire() as conn:
-        result = await conn.execute(query, *values)
-        if "0" in result:
-            raise HTTPException(status_code=404, detail="User not found")
-    
-    return {"status": "updated"}
-
 @app.post("/admin/login")
 async def admin_login(creds: AdminLogin):
     async with app.state.pool.acquire() as conn:
-        admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = $1", creds.email)
+        admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = 'admin@amigo.com'")
         if not admin:
-            bcrypt.checkpw(b"fake", b"$2b$12$fakehash....................")
+            bcrypt.checkpw(b"fake", b"$2b$12$fakehash......................") 
             raise HTTPException(status_code=401)
         if not bcrypt.checkpw(creds.password.encode('utf-8'), admin['password_hash'].encode('utf-8')):
             raise HTTPException(status_code=401)
@@ -399,22 +325,9 @@ async def get_all_users():
         rows = await conn.fetch("SELECT * FROM users ORDER BY created_at DESC")
         return [dict(row) for row in rows]
 
-@app.delete("/admin/users/{telegram_id}")
-async def delete_user(telegram_id: int, admin_password: str = Query(...)):
-    async with app.state.pool.acquire() as conn:
-        admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = $1", "admin@amigo.com")
-        if not admin or not bcrypt.checkpw(admin_password.encode('utf-8'), admin['password_hash'].encode('utf-8')):
-            raise HTTPException(status_code=401, detail="Unauthorized")
-        
-        await conn.execute("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", telegram_id)
-        await conn.execute("DELETE FROM matches WHERE user_1 = $1 OR user_2 = $1", telegram_id)
-        await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
-    
-    return {"status": "user_deleted"}
-
 if __name__ == "__main__":
     uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 8080))
-    )
+    app,
+    host="0.0.0.0",
+    port=int(os.getenv("PORT", 8080))
+)
