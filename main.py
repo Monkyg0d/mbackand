@@ -68,6 +68,8 @@ class CreateInvoiceRequest(BaseModel):
 # --- Bot Setup ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
 # --- Shared DB Pool Container ---
 class DBContainer:
