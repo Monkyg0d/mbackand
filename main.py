@@ -8,8 +8,9 @@ import asyncpg
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
+
 # --- AIOGRAM (Telegram Bot) IMPORTS ---
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, PreCheckoutQuery
 
@@ -77,7 +78,6 @@ class DBContainer:
 
 db = DBContainer()
 
-
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     kb = InlineKeyboardMarkup(
@@ -92,7 +92,6 @@ async def cmd_start(message: types.Message):
         "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже 👇",
         reply_markup=kb
     )
-
 # --- PAYMENT HANDLERS (Aiogram) ---
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
