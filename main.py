@@ -35,6 +35,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://430af44f.mynewapp-1ph.pages.dev")
 
 # --- WEBHOOK SETTINGS ---
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -188,9 +189,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[WEBAPP_URL],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # Явно разрешаем POST и OPTIONS
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
