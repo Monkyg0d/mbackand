@@ -34,7 +34,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://430af44f.mynewapp-1ph.pages.dev")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://10002b84.mynewapp-1ph.pages.dev")
 
 # --- WEBHOOK SETTINGS ---
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
