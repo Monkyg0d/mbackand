@@ -35,7 +35,7 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://10002b84.mynewapp-1ph.pages.dev")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://430af44f.mynewapp-1ph.pages.dev")
 
 # --- WEBHOOK SETTINGS ---
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -254,11 +254,17 @@ async def get_candidates(
     telegram_id: int, 
     city: Optional[str] = None, 
     min_age: int = 18, 
-    max_age: int = 99
+    max_age: int = 99,
+    goal: Optional[str] = None
 ):
     async with app.state.pool.acquire() as conn:
-        requester = await conn.fetchrow("SELECT is_premium FROM users WHERE telegram_id = $1", telegram_id)
-        is_premium = requester['is_premium'] if requester else False
+        requester = await conn.fetchrow("SELECT gender, orientation, is_premium FROM users WHERE telegram_id = $1", telegram_id)
+        if not requester:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        requester_gender = requester['gender']
+        requester_orientation = requester['orientation']
+        is_premium = requester['is_premium']
 
         sql = """
             SELECT * FROM users 
@@ -268,6 +274,23 @@ async def get_candidates(
         params = [telegram_id]
         param_idx = 2
 
+        # Фильтрация по ориентации
+        if requester_orientation == 'hetero':
+            # Натурал видит противоположный пол
+            opposite_gender = 'female' if requester_gender == 'male' else 'male'
+            sql += f" AND gender = ${param_idx}"
+            params.append(opposite_gender)
+            param_idx += 1
+        elif requester_orientation == 'gay':
+            # Гей/Лесби видит свой пол
+            sql += f" AND gender = ${param_idx}"
+            params.append(requester_gender)
+            param_idx += 1
+        elif requester_orientation == 'bi':
+            # Би видит обоих
+            pass
+
+        # Premium фильтры
         if is_premium:
             if city and city != "all":
                 sql += f" AND city = ${param_idx}"
@@ -280,6 +303,10 @@ async def get_candidates(
             if max_age < 99:
                 sql += f" AND age <= ${param_idx}"
                 params.append(max_age)
+                param_idx += 1
+            if goal and goal != 'all':
+                sql += f" AND goal = ${param_idx}"
+                params.append(goal)
                 param_idx += 1
         
         sql += " LIMIT 20"
@@ -324,6 +351,31 @@ async def get_all_users():
     async with app.state.pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM users ORDER BY created_at DESC")
         return [dict(row) for row in rows]
+
+@app.delete("/admin/delete_user")
+async def delete_user(telegram_id: int):
+    async with app.state.pool.acquire() as conn:
+        # Удаляем все лайки и матчи пользователя
+        await conn.execute("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", telegram_id)
+        await conn.execute("DELETE FROM matches WHERE user_1 = $1 OR user_2 = $1", telegram_id)
+        # Удаляем самого пользователя
+        await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
+    return {"status": "deleted", "telegram_id": telegram_id}
+
+@app.put("/me")
+async def update_profile(user: UserProfile):
+    query = """
+    UPDATE users 
+    SET name=$2, age=$3, gender=$4, orientation=$5, city=$6, goal=$7, photo=$8, bio=$9
+    WHERE telegram_id = $1
+    RETURNING *
+    """
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow(query, user.telegram_id, user.name, user.age, 
+                                  user.gender, user.orientation, user.city, user.goal, user.photo, user.bio)
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        return dict(row)
 
 if __name__ == "__main__":
     uvicorn.run(
