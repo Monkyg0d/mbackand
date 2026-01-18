@@ -232,7 +232,7 @@ async def get_me(telegram_id: int):
 @app.post("/create_invoice")
 async def create_invoice(req: CreateInvoiceRequest):
     try:
-        prices = [LabeledPrice(label="Premium Подписка", amount=100 * 100)] 
+        prices = [LabeledPrice(label="Premium Подписка", amount=100 "KZT")] 
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
             description="Доступ к фильтрам и VIP функциям",
