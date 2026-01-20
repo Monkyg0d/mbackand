@@ -106,7 +106,7 @@ async def process_successful_payment(message: types.Message):
     total_amount = message.successful_payment.total_amount // 100
     currency = message.successful_payment.currency
     payload = message.successful_payment.invoice_payload
-    if payload == "premium_upgrade":
+    if payload == "premium_upgrade" or payload == "premium_upgrade_stars":
         print(f"💰 Payment received from {user_id}: {total_amount} {currency}")
         async with db.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", user_id)
@@ -232,10 +232,10 @@ async def get_me(telegram_id: int):
 @app.post("/create_invoice")
 async def create_invoice(req: CreateInvoiceRequest):
     try:
-        prices = [LabeledPrice(label="Premium Подписка",  amount=590 * 100)] 
+        prices = [LabeledPrice(label="Premium Подписка", amount=590 * 100)] 
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
-            description="Доступ к фильтрам и VIP функциям",
+            description="Доступ к фильтрам и VIP функциим",
             payload="premium_upgrade",
             provider_token=PAYMENT_TOKEN,
             currency="KZT",
@@ -247,6 +247,27 @@ async def create_invoice(req: CreateInvoiceRequest):
         return {"invoice_link": invoice_link}
     except Exception as e:
         print(f"Invoice Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/create_stars_invoice")
+async def create_stars_invoice(req: CreateInvoiceRequest):
+    """Create Telegram Stars invoice for premium (100 stars)"""
+    try:
+        prices = [LabeledPrice(label="Premium Подписка", amount=100)]
+        invoice_link = await bot.create_invoice_link(
+            title="Amigo Premium",
+            description="Доступ к фильтрам и VIP функциим",
+            payload="premium_upgrade_stars",
+            provider_token="XTR",
+            currency="XTR",
+            prices=prices,
+            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
+            photo_width=512,
+            photo_height=512
+        )
+        return {"invoice_link": invoice_link}
+    except Exception as e:
+        print(f"Stars Invoice Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/candidates")
