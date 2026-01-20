@@ -191,7 +191,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[WEBAPP_URL],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -230,35 +230,15 @@ async def get_me(telegram_id: int):
         return dict(row)
 
 @app.post("/create_invoice")
-async def create_invoice(req: CreateInvoiceRequest):
-    try:
-        prices = [LabeledPrice(label="Premium Подписка", amount=590 * 100)] 
-        invoice_link = await bot.create_invoice_link(
-            title="Amigo Premium",
-            description="Доступ к фильтрам и VIP функциим",
-            payload="premium_upgrade",
-            provider_token=PAYMENT_TOKEN,
-            currency="KZT",
-            prices=prices,
-            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
-            photo_width=512,
-            photo_height=512
-        )
-        return {"invoice_link": invoice_link}
-    except Exception as e:
-        print(f"Invoice Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/create_stars_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
     """Create Telegram Stars invoice for premium (100 stars)"""
     try:
         prices = [LabeledPrice(label="Premium Подписка", amount=100)]
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
-            description="Доступ к фильтрам и VIP функциим",
+            description="Доступ к фильтрам и VIP функциям",
             payload="premium_upgrade_stars",
-            provider_token="XTR",
+            provider_token="",
             currency="XTR",
             prices=prices,
             photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
