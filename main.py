@@ -7,40 +7,38 @@ from pydantic import BaseModel
 import asyncpg
 from typing import Optional, List
 from contextlib import asynccontextmanager
+import logging
 
-
-# --- AIOGRAM (Telegram Bot) IMPORTS ---
+# ... existing imports ...
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, PreCheckoutQuery
-
-# ================= CONFIGURATION =================
 from dotenv import load_dotenv
 import os
 
-load_dotenv()  # Загружает переменные из .env
+load_dotenv()
 
-# --- DB Settings ---
+# ... existing config ...
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1234")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "amigo")
-
 DB_DSN = os.getenv("DATABASE_URL")
 
-# --- Telegram / Payment ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://21074928.mynewapp-1ph.pages.dev")
 
-# --- WEBHOOK SETTINGS ---
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ... existing models ...
 class UserProfile(BaseModel):
     telegram_id: int
     username: Optional[str] = None
@@ -67,13 +65,12 @@ class AdminLogin(BaseModel):
 class CreateInvoiceRequest(BaseModel):
     telegram_id: int
 
-# --- Bot Setup ---
+# ... bot setup ...
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# --- Shared DB Pool Container ---
 class DBContainer:
     pool = None
 
@@ -85,7 +82,7 @@ async def cmd_start(message: types.Message):
         inline_keyboard=[
             [InlineKeyboardButton(
                 text="❤️ Найти пару",
-                web_app=WebAppInfo(url=os.getenv("WEBAPP_URL"))
+                web_app=WebAppInfo(url=WEBAPP_URL)
             )]
         ]
     )
@@ -93,33 +90,51 @@ async def cmd_start(message: types.Message):
         "Привет! Добро пожаловать в Dating App.\nНажми кнопку ниже 👇",
         reply_markup=kb
     )
-# --- PAYMENT HANDLERS (Aiogram) ---
+
 @router.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
+    logger.info(f"Pre-checkout query from {pre_checkout_query.from_user.id}")
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 @router.message(F.successful_payment)
 async def process_successful_payment(message: types.Message):
     if not db.pool:
+        logger.error("DB pool not available")
         return
+    
     user_id = message.from_user.id
-    total_amount = message.successful_payment.total_amount // 100
-    currency = message.successful_payment.currency
-    payload = message.successful_payment.invoice_payload
-    if payload == "premium_upgrade" or payload == "premium_upgrade_stars":
-        print(f"💰 Payment received from {user_id}: {total_amount} {currency}")
-        async with db.pool.acquire() as conn:
-            await conn.execute("UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", user_id)
-        await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
+    payment = message.successful_payment
+    
+    total_amount = payment.total_amount
+    currency = payment.currency
+    payload = payment.invoice_payload
+    
+    logger.info(f"💰 Payment: user_id={user_id}, amount={total_amount}, currency={currency}, payload={payload}")
+    
+    # Только XTR (звёзды)
+    if currency == "XTR" and total_amount == 1:
+        try:
+            async with db.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", 
+                    user_id
+                )
+            logger.info(f"✅ Premium activated for user {user_id}")
+            await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
+        except Exception as e:
+            logger.error(f"Error updating premium: {e}")
+            await message.answer("❌ Ошибка активации. Пожалуйста, свяжитесь с поддержкой.")
+    else:
+        logger.warning(f"Invalid payment: currency={currency}, amount={total_amount}")
+        await message.answer("❌ Некорректный платёж")
 
-# --- FastAPI Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         pool = await asyncpg.create_pool(DB_DSN)
         db.pool = pool
         app.state.pool = pool
-        print("✅ DB Connected")
+        logger.info("✅ DB Connected")
 
         async with app.state.pool.acquire() as conn:
             await conn.execute("""
@@ -136,6 +151,7 @@ async def lifespan(app: FastAPI):
                     goal TEXT,
                     photo TEXT,
                     bio TEXT,
+                    is_premium BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE TABLE IF NOT EXISTS likes (
@@ -156,11 +172,13 @@ async def lifespan(app: FastAPI):
                     password_hash TEXT
                 );
             """)
+            
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE")
-                print("🔹 Migration: Added is_premium column")
+                logger.info("🔹 Migration: Added is_premium column")
             except asyncpg.exceptions.DuplicateColumnError:
                 pass
+            
             default_hash = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode('utf-8')
             await conn.execute("""
                 INSERT INTO admins (email, password_hash) 
@@ -169,19 +187,17 @@ async def lifespan(app: FastAPI):
             """, ADMIN_EMAIL, default_hash)
 
     except Exception as e:
-        print(f"❌ DB Connection Error: {e}")
+        logger.error(f"❌ DB Connection Error: {e}")
 
-    # 2. Webhook Setup
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL_FULL)
-        print(f"🌐 Webhook set to: {WEBHOOK_URL_FULL}")
+        logger.info(f"🌐 Webhook set to: {WEBHOOK_URL_FULL}")
     except Exception as e:
-        print(f"❌ Webhook Error: {e}")
+        logger.error(f"❌ Webhook Error: {e}")
 
     yield
     
-    # 3. Shutdown
     if hasattr(app.state, 'pool'):
         await app.state.pool.close()
     await bot.session.close()
@@ -189,24 +205,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[WEBAPP_URL],
+    allow_origins=[WEBAPP_URL, "http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Добавьте этот эндпоинт для теста в браузере
 @app.get("/")
 async def health_check():
     return {"status": "ok", "message": "Backend is running"}
 
-# --- WEBHOOK ENDPOINT ---
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):
     telegram_update = types.Update(**update)
     await dp.feed_update(bot, telegram_update)
     return {"ok": True}
-# --- Остальные Endpoints оставляем без изменений ---
+
 @app.post("/register")
 async def register(user: UserProfile):
     query = """
@@ -231,23 +245,26 @@ async def get_me(telegram_id: int):
 
 @app.post("/create_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
-    """Create Telegram Stars invoice for premium (1 stars)"""
+    """Создать инвойс для оплаты 1 звёзды"""
     try:
-        prices = [LabeledPrice(label="Premium Подписка", amount=1)]
+        # Важно: amount в копейках для XTR это сами звёзды (100 звёзд = 100)
+        prices = [LabeledPrice(label="Premium Подписка 1 звёзда", amount=1)]
+        
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
-            description="Доступ к фильтрам и VIP функциям",
+            description="1 Telegram Stars за премиум доступ",
             payload="premium_upgrade_stars",
-            provider_token="",
-            currency="XTR",
+            provider_token="",  # Пусто для звёзд!
+            currency="XTR",     # Только XTR для звёзд
             prices=prices,
             photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
             photo_width=512,
             photo_height=512
         )
+        logger.info(f"Invoice created for user {req.telegram_id}: {invoice_link}")
         return {"invoice_link": invoice_link}
     except Exception as e:
-        print(f"Stars Invoice Error: {e}")
+        logger.error(f"Stars Invoice Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/candidates")
@@ -275,23 +292,16 @@ async def get_candidates(
         params = [telegram_id]
         param_idx = 2
 
-        # Фильтрация по ориентации
         if requester_orientation == 'hetero':
-            # Натурал видит противоположный пол
             opposite_gender = 'female' if requester_gender == 'male' else 'male'
             sql += f" AND gender = ${param_idx}"
             params.append(opposite_gender)
             param_idx += 1
         elif requester_orientation == 'gay':
-            # Гей/Лесби видит свой пол
             sql += f" AND gender = ${param_idx}"
             params.append(requester_gender)
             param_idx += 1
-        elif requester_orientation == 'bi':
-            # Би видит обоих
-            pass
 
-        # Premium фильтры
         if is_premium:
             if city and city != "all":
                 sql += f" AND city = ${param_idx}"
@@ -339,7 +349,7 @@ async def get_matches(telegram_id: int):
 @app.post("/admin/login")
 async def admin_login(creds: AdminLogin):
     async with app.state.pool.acquire() as conn:
-        admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = 'admin@amigo.com'")
+        admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = $1", creds.email)
         if not admin:
             bcrypt.checkpw(b"fake", b"$2b$12$fakehash......................") 
             raise HTTPException(status_code=401)
@@ -356,10 +366,8 @@ async def get_all_users():
 @app.delete("/admin/delete_user")
 async def delete_user(telegram_id: int):
     async with app.state.pool.acquire() as conn:
-        # Удаляем все лайки и матчи пользователя
         await conn.execute("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", telegram_id)
         await conn.execute("DELETE FROM matches WHERE user_1 = $1 OR user_2 = $1", telegram_id)
-        # Удаляем самого пользователя
         await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
     return {"status": "deleted", "telegram_id": telegram_id}
 
@@ -379,8 +387,4 @@ async def update_profile(user: UserProfile):
         return dict(row)
 
 if __name__ == "__main__":
-    uvicorn.run(
-    app,
-    host="0.0.0.0",
-    port=int(os.getenv("PORT", 8080))
-)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
