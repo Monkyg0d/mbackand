@@ -304,7 +304,7 @@ async def get_me(telegram_id: int):
 async def create_stars_invoice(req: CreateInvoiceRequest):
     """Создать инвойс для оплаты 100 звёзд (продление на 30 дней)"""
     try:
-        prices = [LabeledPrice(label="Premium 30 дней", amount=0)]
+        prices = [LabeledPrice(label="Premium 30 дней", amount=100)]
         
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium (1 Месяц)",
