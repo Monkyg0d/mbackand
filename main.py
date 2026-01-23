@@ -8,6 +8,7 @@ import asyncpg
 from typing import Optional, List
 from contextlib import asynccontextmanager
 import logging
+from datetime import datetime, timedelta
 
 # ... existing imports ...
 from aiogram import Bot, Dispatcher, Router, types, F
@@ -112,15 +113,16 @@ async def process_successful_payment(message: types.Message):
     logger.info(f"💰 Payment: user_id={user_id}, amount={total_amount}, currency={currency}, payload={payload}")
     
     # Только XTR (звёзды)
-    if currency == "XTR" and total_amount == 1:
+    if currency == "XTR" and total_amount == 100:
         try:
             async with db.pool.acquire() as conn:
+                premium_until = datetime.utcnow() + timedelta(days=30)
                 await conn.execute(
-                    "UPDATE users SET is_premium = TRUE WHERE telegram_id = $1", 
-                    user_id
+                    "UPDATE users SET is_premium = TRUE, is_premium_until = $2 WHERE telegram_id = $1", 
+                    user_id, premium_until
                 )
-            logger.info(f"✅ Premium activated for user {user_id}")
-            await message.answer("🎉 Поздравляем! Ваш Premium активирован. Перезагрузите приложение, чтобы увидеть изменения.")
+            logger.info(f"✅ Premium activated for user {user_id} until {premium_until}")
+            await message.answer("🎉 Поздравляем! Ваш Premium активирован на 30 дней. Перезагрузите приложение, чтобы увидеть изменения.")
         except Exception as e:
             logger.error(f"Error updating premium: {e}")
             await message.answer("❌ Ошибка активации. Пожалуйста, свяжитесь с поддержкой.")
@@ -152,6 +154,7 @@ async def lifespan(app: FastAPI):
                     photo TEXT,
                     bio TEXT,
                     is_premium BOOLEAN DEFAULT FALSE,
+                    is_premium_until TIMESTAMP,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE TABLE IF NOT EXISTS likes (
@@ -176,6 +179,12 @@ async def lifespan(app: FastAPI):
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE")
                 logger.info("🔹 Migration: Added is_premium column")
+            except asyncpg.exceptions.DuplicateColumnError:
+                pass
+            
+            try:
+                await conn.execute("ALTER TABLE users ADD COLUMN is_premium_until TIMESTAMP")
+                logger.info("🔹 Migration: Added is_premium_until column")
             except asyncpg.exceptions.DuplicateColumnError:
                 pass
             
@@ -241,18 +250,20 @@ async def get_me(telegram_id: int):
         row = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1", telegram_id)
         if not row:
             raise HTTPException(status_code=404, detail="User not found")
-        return dict(row)
+        result = dict(row)
+        result['is_premium_active'] = await is_premium_active(telegram_id, conn)
+        return result
 
 @app.post("/create_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
-    """Создать инвойс для оплаты 1 звёзды"""
+    """Создать инвойс для оплаты 100 звёзд"""
     try:
         # Важно: amount в копейках для XTR это сами звёзды (100 звёзд = 100)
-        prices = [LabeledPrice(label="Premium Подписка 1 звёзда", amount=1)]
+        prices = [LabeledPrice(label="Premium Подписка 100 звёзд", amount=100)]
         
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium",
-            description="1 Telegram Stars за премиум доступ",
+            description="100 Telegram Stars за премиум доступ",
             payload="premium_upgrade_stars",
             provider_token="",  # Пусто для звёзд!
             currency="XTR",     # Только XTR для звёзд
@@ -276,13 +287,13 @@ async def get_candidates(
     goal: Optional[str] = None
 ):
     async with app.state.pool.acquire() as conn:
-        requester = await conn.fetchrow("SELECT gender, orientation, is_premium FROM users WHERE telegram_id = $1", telegram_id)
+        requester = await conn.fetchrow("SELECT gender, orientation, is_premium, is_premium_until FROM users WHERE telegram_id = $1", telegram_id)
         if not requester:
             raise HTTPException(status_code=404, detail="User not found")
         
         requester_gender = requester['gender']
         requester_orientation = requester['orientation']
-        is_premium = requester['is_premium']
+        is_premium = await is_premium_active(telegram_id, conn)
 
         sql = """
             SELECT * FROM users 
