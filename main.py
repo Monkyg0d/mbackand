@@ -437,10 +437,8 @@ async def get_all_users():
 @app.delete("/admin/delete_user")
 async def delete_user(telegram_id: int):
     async with app.state.pool.acquire() as conn:
-        # Удаляем все лайки и матчи пользователя
         await conn.execute("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", telegram_id)
         await conn.execute("DELETE FROM matches WHERE user_1 = $1 OR user_2 = $1", telegram_id)
-        # Удаляем самого пользователя
         await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
     return {"status": "deleted", "telegram_id": telegram_id}
 
