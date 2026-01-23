@@ -8,9 +8,8 @@ import asyncpg
 from typing import Optional, List
 from contextlib import asynccontextmanager
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # <--- Для работы с датами
 
-# ... existing imports ...
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice, PreCheckoutQuery
@@ -19,7 +18,7 @@ import os
 
 load_dotenv()
 
-# ... existing config ...
+# --- КОНФИГУРАЦИЯ ---
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1234")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -39,7 +38,7 @@ WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ... existing models ...
+# --- МОДЕЛИ ДАННЫХ ---
 class UserProfile(BaseModel):
     telegram_id: int
     username: Optional[str] = None
@@ -54,6 +53,7 @@ class UserProfile(BaseModel):
     photo: Optional[str] = None
     bio: Optional[str] = None
     is_premium: bool = False
+    # premium_expires_at не требуем при регистрации, это системное поле
 
 class LikeRequest(BaseModel):
     from_user: int
@@ -66,7 +66,7 @@ class AdminLogin(BaseModel):
 class CreateInvoiceRequest(BaseModel):
     telegram_id: int
 
-# ... bot setup ...
+# --- НАСТРОЙКА БОТА ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
@@ -76,6 +76,23 @@ class DBContainer:
     pool = None
 
 db = DBContainer()
+
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
+async def check_and_remove_expired_premium(conn, telegram_id: int):
+    """
+    Проверяет, не истекла ли подписка. Если истекла — снимает статус Premium.
+    """
+    try:
+        # Если время истекло (premium_expires_at < NOW()), ставим is_premium = False
+        await conn.execute("""
+            UPDATE users 
+            SET is_premium = FALSE, premium_expires_at = NULL 
+            WHERE telegram_id = $1 AND is_premium = TRUE AND premium_expires_at < NOW()
+        """, telegram_id)
+    except Exception as e:
+        logger.error(f"Error checking premium expiration: {e}")
+
+# --- ОБРАБОТЧИКИ БОТА ---
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -110,25 +127,45 @@ async def process_successful_payment(message: types.Message):
     currency = payment.currency
     payload = payment.invoice_payload
     
-    logger.info(f"💰 Payment: user_id={user_id}, amount={total_amount}, currency={currency}, payload={payload}")
+    logger.info(f"💰 Payment: user_id={user_id}, amount={total_amount}, currency={currency}")
     
-    # Только XTR (звёзды)
+    # Логика для 30 дней подписки
     if currency == "XTR" and total_amount == 100:
         try:
             async with db.pool.acquire() as conn:
-                premium_until = datetime.utcnow() + timedelta(days=30)
-                await conn.execute(
-                    "UPDATE users SET is_premium = TRUE, is_premium_until = $2 WHERE telegram_id = $1", 
-                    user_id, premium_until
+                # 1. Получаем текущие данные
+                user = await conn.fetchrow(
+                    "SELECT is_premium, premium_expires_at FROM users WHERE telegram_id = $1", 
+                    user_id
                 )
-            logger.info(f"✅ Premium activated for user {user_id} until {premium_until}")
-            await message.answer("🎉 Поздравляем! Ваш Premium активирован на 30 дней. Перезагрузите приложение, чтобы увидеть изменения.")
+                
+                now = datetime.now()
+                current_expiry = user['premium_expires_at'] if user else None
+                
+                # 2. Считаем новую дату окончания
+                if user and user['is_premium'] and current_expiry and current_expiry > now:
+                    # Если подписка активна — продлеваем на 30 дней от текущего конца
+                    new_expiry = current_expiry + timedelta(days=30)
+                else:
+                    # Если подписки нет или она истекла — даем 30 дней от сейчас
+                    new_expiry = now + timedelta(days=30)
+
+                # 3. Обновляем БД
+                await conn.execute(
+                    "UPDATE users SET is_premium = TRUE, premium_expires_at = $1 WHERE telegram_id = $2", 
+                    new_expiry, user_id
+                )
+            
+            logger.info(f"✅ Premium activated for user {user_id} until {new_expiry}")
+            await message.answer(f"🎉 Premium активирован! Он действителен до {new_expiry.strftime('%d.%m.%Y')}. Перезагрузите приложение.")
         except Exception as e:
             logger.error(f"Error updating premium: {e}")
             await message.answer("❌ Ошибка активации. Пожалуйста, свяжитесь с поддержкой.")
     else:
         logger.warning(f"Invalid payment: currency={currency}, amount={total_amount}")
         await message.answer("❌ Некорректный платёж")
+
+# --- DATABASE & LIFESPAN ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -139,6 +176,7 @@ async def lifespan(app: FastAPI):
         logger.info("✅ DB Connected")
 
         async with app.state.pool.acquire() as conn:
+            # Создаем таблицы (добавляем premium_expires_at)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id BIGINT PRIMARY KEY,
@@ -154,7 +192,7 @@ async def lifespan(app: FastAPI):
                     photo TEXT,
                     bio TEXT,
                     is_premium BOOLEAN DEFAULT FALSE,
-                    is_premium_until TIMESTAMP,
+                    premium_expires_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE TABLE IF NOT EXISTS likes (
@@ -176,18 +214,15 @@ async def lifespan(app: FastAPI):
                 );
             """)
             
+            # МИГРАЦИЯ: Если таблица уже была создана раньше без этой колонки
             try:
-                await conn.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE")
-                logger.info("🔹 Migration: Added is_premium column")
-            except asyncpg.exceptions.DuplicateColumnError:
-                pass
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMP")
+                logger.info("🔹 Migration checked")
+            except Exception as e:
+                logger.warning(f"Migration note: {e}")
             
-            try:
-                await conn.execute("ALTER TABLE users ADD COLUMN is_premium_until TIMESTAMP")
-                logger.info("🔹 Migration: Added is_premium_until column")
-            except asyncpg.exceptions.DuplicateColumnError:
-                pass
-            
+            # Создание админа
             default_hash = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode('utf-8')
             await conn.execute("""
                 INSERT INTO admins (email, password_hash) 
@@ -198,6 +233,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ DB Connection Error: {e}")
 
+    # Webhook setup
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL_FULL)
@@ -216,9 +252,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[WEBAPP_URL, "http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# --- API ENDPOINTS ---
 
 @app.get("/")
 async def health_check():
@@ -232,6 +270,7 @@ async def telegram_webhook(update: dict):
 
 @app.post("/register")
 async def register(user: UserProfile):
+    # При регистрации премиум по умолчанию False и даты нет
     query = """
     INSERT INTO users (telegram_id, username, first_name, name, age, gender, orientation, country, city, goal, photo, bio, is_premium)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
@@ -247,28 +286,34 @@ async def register(user: UserProfile):
 @app.get("/me")
 async def get_me(telegram_id: int):
     async with app.state.pool.acquire() as conn:
+        # ВАЖНО: Проверяем срок подписки перед отдачей профиля
+        await check_and_remove_expired_premium(conn, telegram_id)
+        
         row = await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1", telegram_id)
         if not row:
             raise HTTPException(status_code=404, detail="User not found")
-        result = dict(row)
-        result['is_premium_active'] = await is_premium_active(telegram_id, conn)
-        return result
+        
+        # Конвертируем дату в строку для JSON, если она есть
+        user_data = dict(row)
+        if user_data.get('premium_expires_at'):
+            user_data['premium_expires_at'] = user_data['premium_expires_at'].isoformat()
+            
+        return user_data
 
 @app.post("/create_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
-    """Создать инвойс для оплаты 100 звёзд"""
+    """Создать инвойс для оплаты 100 звёзд (продление на 30 дней)"""
     try:
-        # Важно: amount в копейках для XTR это сами звёзды (100 звёзд = 100)
-        prices = [LabeledPrice(label="Premium Подписка 100 звёзд", amount=100)]
+        prices = [LabeledPrice(label="Premium 30 дней", amount=100)]
         
         invoice_link = await bot.create_invoice_link(
-            title="Amigo Premium",
-            description="100 Telegram Stars за премиум доступ",
-            payload="premium_upgrade_stars",
-            provider_token="",  # Пусто для звёзд!
-            currency="XTR",     # Только XTR для звёзд
+            title="Amigo Premium (1 Месяц)",
+            description="Доступ к расширенным фильтрам на 30 дней",
+            payload="premium_month_subscription",
+            provider_token="",  # Пусто для звёзд
+            currency="XTR",     # Валюта звёзд
             prices=prices,
-            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png",
+            photo_url="https://cdn-icons-png.flaticon.com/512/1458/1458260.png", # Можно поменять на свою
             photo_width=512,
             photo_height=512
         )
@@ -287,13 +332,16 @@ async def get_candidates(
     goal: Optional[str] = None
 ):
     async with app.state.pool.acquire() as conn:
-        requester = await conn.fetchrow("SELECT gender, orientation, is_premium, is_premium_until FROM users WHERE telegram_id = $1", telegram_id)
+        # ВАЖНО: Снимаем просроченный премиум перед поиском
+        await check_and_remove_expired_premium(conn, telegram_id)
+
+        requester = await conn.fetchrow("SELECT gender, orientation, is_premium FROM users WHERE telegram_id = $1", telegram_id)
         if not requester:
             raise HTTPException(status_code=404, detail="User not found")
         
         requester_gender = requester['gender']
         requester_orientation = requester['orientation']
-        is_premium = await is_premium_active(telegram_id, conn)
+        is_premium = requester['is_premium'] # Теперь это актуальное значение (после проверки даты)
 
         sql = """
             SELECT * FROM users 
@@ -303,6 +351,7 @@ async def get_candidates(
         params = [telegram_id]
         param_idx = 2
 
+        # Фильтр по гендеру
         if requester_orientation == 'hetero':
             opposite_gender = 'female' if requester_gender == 'male' else 'male'
             sql += f" AND gender = ${param_idx}"
@@ -313,6 +362,7 @@ async def get_candidates(
             params.append(requester_gender)
             param_idx += 1
 
+        # Фильтры доступны ТОЛЬКО если is_premium == True
         if is_premium:
             if city and city != "all":
                 sql += f" AND city = ${param_idx}"
@@ -357,11 +407,14 @@ async def get_matches(telegram_id: int):
         rows = await conn.fetch(query, telegram_id)
         return [dict(row) for row in rows]
 
+# --- ADMIN ENDPOINTS ---
+
 @app.post("/admin/login")
 async def admin_login(creds: AdminLogin):
     async with app.state.pool.acquire() as conn:
         admin = await conn.fetchrow("SELECT password_hash FROM admins WHERE email = $1", creds.email)
         if not admin:
+            # Защита от тайминг-атак
             bcrypt.checkpw(b"fake", b"$2b$12$fakehash......................") 
             raise HTTPException(status_code=401)
         if not bcrypt.checkpw(creds.password.encode('utf-8'), admin['password_hash'].encode('utf-8')):
@@ -371,8 +424,15 @@ async def admin_login(creds: AdminLogin):
 @app.get("/admin/users")
 async def get_all_users():
     async with app.state.pool.acquire() as conn:
+        # Добавил отображение даты истечения премиума
         rows = await conn.fetch("SELECT * FROM users ORDER BY created_at DESC")
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get('premium_expires_at'):
+                d['premium_expires_at'] = d['premium_expires_at'].isoformat()
+            result.append(d)
+        return result
 
 @app.delete("/admin/delete_user")
 async def delete_user(telegram_id: int):
