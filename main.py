@@ -30,7 +30,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://21074928.mynewapp-1ph.pages.dev")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://b22df1ac.mynewapp-1ph.pages.dev")
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL_FULL = WEBHOOK_URL + WEBHOOK_PATH
@@ -304,7 +304,7 @@ async def get_me(telegram_id: int):
 async def create_stars_invoice(req: CreateInvoiceRequest):
     """Создать инвойс для оплаты 100 звёзд (продление на 30 дней)"""
     try:
-        prices = [LabeledPrice(label="Premium 30 дней", amount=100)]
+        prices = [LabeledPrice(label="Premium 30 дней", amount=0)]
         
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium (1 Месяц)",
