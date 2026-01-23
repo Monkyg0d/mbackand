@@ -130,7 +130,7 @@ async def process_successful_payment(message: types.Message):
     logger.info(f"💰 Payment: user_id={user_id}, amount={total_amount}, currency={currency}")
     
     # Логика для 30 дней подписки
-    if currency == "XTR" and total_amount == 100:
+    if currency == "XTR" and total_amount == 1:
         try:
             async with db.pool.acquire() as conn:
                 # 1. Получаем текущие данные
@@ -252,7 +252,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[WEBAPP_URL, "http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -302,9 +302,9 @@ async def get_me(telegram_id: int):
 
 @app.post("/create_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
-    """Создать инвойс для оплаты 100 звёзд (продление на 30 дней)"""
+    """Создать инвойс для оплаты 1 звёзд (продление на 30 дней)"""
     try:
-        prices = [LabeledPrice(label="Premium 30 дней", amount=100)]
+        prices = [LabeledPrice(label="Premium 30 дней", amount=1)]
         
         invoice_link = await bot.create_invoice_link(
             title="Amigo Premium (1 Месяц)",
