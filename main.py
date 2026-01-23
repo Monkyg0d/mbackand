@@ -302,7 +302,7 @@ async def get_me(telegram_id: int):
 
 @app.post("/create_invoice")
 async def create_stars_invoice(req: CreateInvoiceRequest):
-    """Создать инвойс для оплаты 1 звёзд (продление на 30 дней)"""
+    """Создать инвойс для оплаты на 1 звёзд (продление на 30 дней)"""
     try:
         prices = [LabeledPrice(label="Premium 30 дней", amount=1)]
         
