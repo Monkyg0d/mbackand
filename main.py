@@ -420,6 +420,8 @@ async def admin_login(creds: AdminLogin):
         if not bcrypt.checkpw(creds.password.encode('utf-8'), admin['password_hash'].encode('utf-8')):
             raise HTTPException(status_code=401)
         return {"status": "authorized"}
+        
+
 
 @app.get("/admin/users")
 async def get_all_users():
@@ -433,15 +435,19 @@ async def get_all_users():
                 d['premium_expires_at'] = d['premium_expires_at'].isoformat()
             result.append(d)
         return result
+        
+class DeleteUserRequest(BaseModel):
+    telegram_id: int
 
 @app.delete("/admin/delete_user")
-async def delete_user(telegram_id: int):
+async def delete_user(req: DeleteUserRequest): # Используем модель
+    telegram_id = req.telegram_id
     async with app.state.pool.acquire() as conn:
         await conn.execute("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", telegram_id)
         await conn.execute("DELETE FROM matches WHERE user_1 = $1 OR user_2 = $1", telegram_id)
         await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
     return {"status": "deleted", "telegram_id": telegram_id}
-
+    
 @app.put("/me")
 async def update_profile(user: UserProfile):
     query = """
